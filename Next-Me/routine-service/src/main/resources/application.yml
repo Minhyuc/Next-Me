@@ -1,0 +1,42 @@
+server:
+  # Gateway가 루틴 요청을 전달할 내부 포트
+  port: ${ROUTINE_SERVICE_PORT:8084}
+
+spring:
+  application:
+    name: routine-service
+  datasource:
+    # 일별 루틴, 항목, 초기화 설정, 완주 기록 전용 MySQL 스키마
+    url: ${ROUTINE_DB_URL:jdbc:mysql://localhost:3306/NMRoutineData}
+    username: ${ROUTINE_DB_USERNAME:${DB_USERNAME:root}}
+    password: ${ROUTINE_DB_PASSWORD:${MYSQL_PASSWORD}}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+jwt:
+  secret: ${CREATE_JWT}
+
+openai:
+  api-key: ${OPENAI_API_KEY}
+  model: ${OPENAI_ROUTINE_MODEL:${OPENAI_MODEL:gpt-4o-mini}}
+  endpoint: ${OPENAI_RESPONSES_BASE_URL:https://api.openai.com/v1}
+
+services:
+  user-service:
+    url: ${USER_SERVICE_URL:http://localhost:8082}
+
+routine:
+  # AI 추천값이 없거나 처음 설정을 만들 때 사용할 기본 날짜 경계
+  default-reset-time: "00:00"
+  default-zone-id: Asia/Seoul
+
+logging:
+  level:
+    org.hibernate.SQL: debug
+    org.hibernate.orm.jdbc.bind: trace

@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# IntelliJ IDEA 개인 설정
+.idea/
+*.iml
+
+# Gradle 로컬 캐시와 빌드 결과물
+.gradle/
+**/build/
+
+# 실제 비밀값 파일은 제외하고 배포 예시만 허용
+.env
+**/.env
+.env.*
+!.env.example
+!.env.production.example
+
+# 로그와 임시 파일
+*.log
+*.tmp

@@ -6,6 +6,7 @@ import com.nm.loginservice.Dto.UserSyncRequestDto;
 import com.nm.loginservice.Entity.User;
 import com.nm.loginservice.Repository.LoginRepository;
 import com.nm.loginservice.Security.JwtUtil;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -18,17 +19,20 @@ public class LoginService {
     private final JwtUtil jwtUtil;
     private final PasswordEncoder passwordEncoder;
     private final RestTemplate restTemplate;
+    private final String userServiceUrl;
 
     public LoginService(LoginRepository repository,
                         EmailverificationService emailVerificationService,
                         JwtUtil jwtUtil,
                         PasswordEncoder passwordEncoder,
-                        RestTemplate restTemplate) {
+                        RestTemplate restTemplate,
+                        @Value("${services.user-service.url:http://localhost:8082}") String userServiceUrl) {
         this.repository = repository;
         this.emailVerificationService = emailVerificationService;
         this.jwtUtil = jwtUtil;
         this.passwordEncoder = passwordEncoder;
         this.restTemplate = restTemplate;
+        this.userServiceUrl = userServiceUrl;
     }
 
     // 회원가입
@@ -73,7 +77,7 @@ public class LoginService {
             syncDto.setUserId(user.getId());
 
             restTemplate.postForObject(
-                    "http://localhost:8082/users/sync",
+                    userServiceUrl + "/users/sync",
                     syncDto,
                     String.class
             );

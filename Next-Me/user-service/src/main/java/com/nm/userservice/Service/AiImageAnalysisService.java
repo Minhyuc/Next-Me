@@ -379,9 +379,10 @@ public class AiImageAnalysisService {
     }
 
     private String getEnvValue(String key) {
-        String value = dotenv.get(key);
+        // 가비아에 등록한 운영 환경 변수가 로컬 개발용 .env보다 우선한다.
+        String value = System.getenv(key);
         if (!StringUtils.hasText(value)) {
-            value = System.getenv(key);
+            value = dotenv.get(key);
         }
         return value;
     }

@@ -1,0 +1,2 @@
+# Spring 설정을 읽기 전에 .env 로더를 실행하도록 등록한다.
+org.springframework.boot.EnvironmentPostProcessor=com.nm.routineservice.Processor.DotenvEnvironmentPostProcessor

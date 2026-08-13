@@ -1,5 +1,6 @@
 server:
-  port: 8080
+  # 프론트와 Postman은 각 서비스 포트 대신 Gateway 8080번만 호출한다.
+  port: ${GATEWAY_PORT:8080}
 
 spring:
   application:
@@ -7,12 +8,32 @@ spring:
   cloud:
     gateway:
       routes:
+        # 인증 요청을 login-service로 전달한다.
         - id: login-service
-          uri: http://localhost:8081
+          uri: ${LOGIN_SERVICE_URL:http://localhost:8081}
           predicates:
             - Path=/auth/**
 
+        # 프로필 관련 요청을 user-service로 전달한다.
         - id: user-service
-          uri: http://localhost:8082
+          uri: ${USER_SERVICE_URL:http://localhost:8082}
           predicates:
             - Path=/users/**
+
+        # 피부·운동·루틴 AI 상담 요청을 ai-chat-service로 전달한다.
+        - id: ai-chat-service
+          uri: ${AI_CHAT_SERVICE_URL:http://localhost:8083}
+          predicates:
+            - Path=/ai-chat/**
+
+        # 하루 루틴 생성·조정·완료 요청을 routine-service로 전달한다.
+        - id: routine-service
+          uri: ${ROUTINE_SERVICE_URL:http://localhost:8084}
+          predicates:
+            - Path=/routines/**
+
+        # 퍼스널컬러 분석과 옷·화장 추천 요청을 전용 서비스로 전달한다.
+        - id: personal-color-service
+          uri: ${PERSONAL_COLOR_SERVICE_URL:http://localhost:8085}
+          predicates:
+            - Path=/personal-colors/**

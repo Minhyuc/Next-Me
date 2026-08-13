@@ -1,0 +1,52 @@
+plugins {
+    // Java 컴파일, Spring Boot 실행 파일 생성, 의존성 버전 관리를 활성화한다.
+    id 'java'
+    id 'org.springframework.boot' version '4.1.0'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.NM'
+version = '0.0.1-SNAPSHOT'
+description = 'ai-chat-service'
+
+java {
+    // 프로젝트의 기준 JDK 버전이다.
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+springBoot {
+    // IntelliJ와 Gradle이 실행해야 할 main 클래스를 명시한다.
+    mainClass = 'com.nm.aichatservice.AiChatServiceApplication'
+}
+
+dependencies {
+    // REST API, DB(JPA), 요청값 검증에 필요한 Spring 기능
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    // 루트 .env 로딩과 JWT 검증에 필요한 라이브러리
+    implementation 'io.github.cdimascio:dotenv-java:3.0.0'
+    implementation 'io.jsonwebtoken:jjwt-api:0.11.5'
+
+    // DTO·Entity의 getter, builder 등을 컴파일 시 자동 생성한다.
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // 실행할 때만 필요한 MySQL 드라이버와 JWT 구현체
+    runtimeOnly 'com.mysql:mysql-connector-j'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.11.5'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+tasks.named('test') {
+    // JUnit 5 기반 테스트를 실행한다.
+    useJUnitPlatform()
+}

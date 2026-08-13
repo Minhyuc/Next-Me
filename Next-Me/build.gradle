@@ -33,3 +33,9 @@ dependencies {
 tasks.named('test') {
     useJUnitPlatform()
 }
+
+// 최상위 프로젝트는 여러 서비스를 묶는 용도이며 자체 실행 클래스가 없다.
+// 실행 가능한 JAR은 각 하위 서비스에서 생성하므로 루트 bootJar 작업은 비활성화한다.
+tasks.named('bootJar') {
+    enabled = false
+}

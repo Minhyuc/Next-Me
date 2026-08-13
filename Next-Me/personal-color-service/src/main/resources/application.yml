@@ -1,0 +1,36 @@
+server:
+  # Gateway가 퍼스널컬러 요청을 전달할 내부 포트
+  port: ${PERSONAL_COLOR_SERVICE_PORT:8085}
+
+spring:
+  application:
+    name: personal-color-service
+  datasource:
+    # 분석 대화와 옷·화장 추천 이력을 보관하는 전용 MySQL 스키마
+    url: ${PERSONAL_COLOR_DB_URL:jdbc:mysql://localhost:3306/NMPersonalColorData}
+    username: ${PERSONAL_COLOR_DB_USERNAME:${DB_USERNAME:root}}
+    password: ${PERSONAL_COLOR_DB_PASSWORD:${MYSQL_PASSWORD}}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+jwt:
+  secret: ${CREATE_JWT}
+
+openai:
+  api-key: ${OPENAI_API_KEY}
+  model: ${OPENAI_PERSONAL_COLOR_MODEL:${OPENAI_MODEL:gpt-4o-mini}}
+  endpoint: ${OPENAI_RESPONSES_BASE_URL:https://api.openai.com/v1}
+
+services:
+  user-service:
+    url: ${USER_SERVICE_URL:http://localhost:8082}
+
+personal-color:
+  # 오늘 날짜를 판단해 추천 이력을 저장할 때 사용하는 기본 시간대
+  zone-id: Asia/Seoul

@@ -1,0 +1,39 @@
+server:
+  # Gateway가 AI 대화 요청을 전달할 내부 포트
+  port: ${AI_CHAT_SERVICE_PORT:8083}
+
+spring:
+  application:
+    name: ai-chat-service
+  datasource:
+    # AI 대화방과 메시지는 별도 MySQL 스키마에 저장한다.
+    url: ${AI_CHAT_DB_URL:jdbc:mysql://localhost:3306/NMAiChatData}
+    username: ${AI_CHAT_DB_USERNAME:${DB_USERNAME:root}}
+    password: ${AI_CHAT_DB_PASSWORD:${MYSQL_PASSWORD}}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+jwt:
+  # login-service가 서명할 때 사용한 것과 같은 키여야 한다.
+  secret: ${CREATE_JWT}
+
+openai:
+  api-key: ${OPENAI_API_KEY}
+  model: ${OPENAI_MODEL:gpt-4o-mini}
+  endpoint: ${OPENAI_RESPONSES_BASE_URL:https://api.openai.com/v1}
+
+services:
+  # AI가 답변할 때 현재 사용자 프로필을 조회할 내부 서비스 주소
+  user-service:
+    url: ${USER_SERVICE_URL:http://localhost:8082}
+
+logging:
+  level:
+    org.hibernate.SQL: debug
+    org.hibernate.orm.jdbc.bind: trace
