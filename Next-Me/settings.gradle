@@ -1,0 +1,3 @@
+rootProject.name = 'Next-Me'
+include 'login-service'
+include 'user-service'

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/Next-Me.iml" filepath="$PROJECT_DIR$/.idea/Next-Me.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/login-service/Next-Me.login-service.main.iml" filepath="$PROJECT_DIR$/.idea/modules/login-service/Next-Me.login-service.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/user-service/Next-Me.user-service.main.iml" filepath="$PROJECT_DIR$/.idea/modules/user-service/Next-Me.user-service.main.iml" />
+    </modules>
+  </component>
+</project>
