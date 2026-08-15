@@ -1,0 +1,2 @@
+# application.yml 처리 전에 공통 .env 값을 Spring 환경에 등록한다.
+org.springframework.boot.env.EnvironmentPostProcessor=com.nm.gateway.Processor.DotenvEnvironmentPostProcessor

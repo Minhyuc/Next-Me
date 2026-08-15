@@ -16,6 +16,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 @Service
 public class UserService {
@@ -65,10 +66,12 @@ public class UserService {
         return toDto(profile);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public UserResponseDto getProfile(Long userId) {
         UserProfile profile = userRepository.findByUserId(userId)
-                .orElseThrow(() -> new RuntimeException("프로필이 없습니다."));
+                .orElseGet(() -> userRepository.save(UserProfile.builder()
+                        .userId(userId)
+                        .build()));
         return toDto(profile);
     }
 
@@ -80,29 +83,29 @@ public class UserService {
                         .userId(userId)
                         .build());
 
-        profile.setNickname(dto.getNickname());
-        profile.setGender(dto.getGender());
+        profile.setNickname(normalizeNullableText(dto.getNickname(), "nickname"));
+        profile.setGender(normalizeNullableText(dto.getGender(), "gender"));
         profile.setAgeGroup(dto.getAgeGroup());
 
-        profile.setWorkDay(dto.getWorkDay());
-        profile.setLeaveTime(dto.getLeaveTime());
-        profile.setComeTime(dto.getComeTime());
-        profile.setWorkStyle(dto.getWorkStyle());
+        profile.setWorkDay(normalizeNullableText(dto.getWorkDay(), "workDay"));
+        profile.setLeaveTime(normalizeNullableText(dto.getLeaveTime(), "leaveTime"));
+        profile.setComeTime(normalizeNullableText(dto.getComeTime(), "comeTime"));
+        profile.setWorkStyle(normalizeNullableText(dto.getWorkStyle(), "workStyle"));
 
         profile.setSleepHour(dto.getSleepHour());
 
-        profile.setMakeupFrequency(dto.getMakeupFrequency());
-        profile.setSunscreenFrequency(dto.getSunscreenFrequency());
+        profile.setMakeupFrequency(normalizeNullableText(dto.getMakeupFrequency(), "makeupFrequency"));
+        profile.setSunscreenFrequency(normalizeNullableText(dto.getSunscreenFrequency(), "sunscreenFrequency"));
 
         profile.setExerciseCount(dto.getExerciseCount());
-        profile.setSweatAmount(dto.getSweatAmount());
+        profile.setSweatAmount(normalizeNullableText(dto.getSweatAmount(), "sweatAmount"));
 
-        profile.setSkinType(dto.getSkinType());
-        profile.setConcerns(dto.getConcerns());
+        profile.setSkinType(normalizeNullableText(dto.getSkinType(), "skinType"));
+        profile.setConcerns(normalizeNullableText(dto.getConcerns(), "concerns"));
 
-        profile.setPersonalColor(dto.getPersonalColor());
+        profile.setPersonalColor(normalizeNullableText(dto.getPersonalColor(), "personalColor"));
 
-        profile.setOnboardingMode(dto.getOnboardingMode());
+        profile.setOnboardingMode(normalizeNullableText(dto.getOnboardingMode(), "onboardingMode"));
 
         UserOnboardingProgress progress = progressRepository.findByUserId(userId)
                 .orElseGet(() -> UserOnboardingProgress.builder()
@@ -125,29 +128,29 @@ public class UserService {
         UserProfile profile = userRepository.findByUserId(userId)
                 .orElseThrow(() -> new RuntimeException("프로필이 없습니다."));
 
-        if (dto.getNickname() != null) profile.setNickname(dto.getNickname());
-        if (dto.getGender() != null) profile.setGender(dto.getGender());
+        updateTextIfPresent(dto.getNickname(), "nickname", profile::setNickname);
+        updateTextIfPresent(dto.getGender(), "gender", profile::setGender);
         if (dto.getAgeGroup() != null) profile.setAgeGroup(dto.getAgeGroup());
 
-        if (dto.getWorkDay() != null) profile.setWorkDay(dto.getWorkDay());
-        if (dto.getLeaveTime() != null) profile.setLeaveTime(dto.getLeaveTime());
-        if (dto.getComeTime() != null) profile.setComeTime(dto.getComeTime());
-        if (dto.getWorkStyle() != null) profile.setWorkStyle(dto.getWorkStyle());
+        updateTextIfPresent(dto.getWorkDay(), "workDay", profile::setWorkDay);
+        updateTextIfPresent(dto.getLeaveTime(), "leaveTime", profile::setLeaveTime);
+        updateTextIfPresent(dto.getComeTime(), "comeTime", profile::setComeTime);
+        updateTextIfPresent(dto.getWorkStyle(), "workStyle", profile::setWorkStyle);
 
         if (dto.getSleepHour() != null) profile.setSleepHour(dto.getSleepHour());
 
-        if (dto.getMakeupFrequency() != null) profile.setMakeupFrequency(dto.getMakeupFrequency());
-        if (dto.getSunscreenFrequency() != null) profile.setSunscreenFrequency(dto.getSunscreenFrequency());
+        updateTextIfPresent(dto.getMakeupFrequency(), "makeupFrequency", profile::setMakeupFrequency);
+        updateTextIfPresent(dto.getSunscreenFrequency(), "sunscreenFrequency", profile::setSunscreenFrequency);
 
         if (dto.getExerciseCount() != null) profile.setExerciseCount(dto.getExerciseCount());
-        if (dto.getSweatAmount() != null) profile.setSweatAmount(dto.getSweatAmount());
+        updateTextIfPresent(dto.getSweatAmount(), "sweatAmount", profile::setSweatAmount);
 
-        if (dto.getSkinType() != null) profile.setSkinType(dto.getSkinType());
-        if (dto.getConcerns() != null) profile.setConcerns(dto.getConcerns());
-        if (dto.getPersonalColor() != null) profile.setPersonalColor(dto.getPersonalColor());
+        updateTextIfPresent(dto.getSkinType(), "skinType", profile::setSkinType);
+        updateTextIfPresent(dto.getConcerns(), "concerns", profile::setConcerns);
+        updateTextIfPresent(dto.getPersonalColor(), "personalColor", profile::setPersonalColor);
 
-        if (dto.getOnboardingStatus() != null) profile.setOnboardingStatus(dto.getOnboardingStatus());
-        if (dto.getOnboardingMode() != null) profile.setOnboardingMode(dto.getOnboardingMode());
+        updateTextIfPresent(dto.getOnboardingStatus(), "onboardingStatus", profile::setOnboardingStatus);
+        updateTextIfPresent(dto.getOnboardingMode(), "onboardingMode", profile::setOnboardingMode);
         if (dto.getOnboardingStep() != null) profile.setOnboardingStep(dto.getOnboardingStep());
 
         updateCompletionState(profile, null);
@@ -269,6 +272,9 @@ public class UserService {
     // 온보딩 답변 저장
     @Transactional
     public OnboardingNextResponseDto saveOnboardingAnswer(Long userId, OnboardingAnswerRequestDto dto) {
+        dto.setField(requireText(dto.getField(), "field"));
+        dto.setValue(requireText(dto.getValue(), "value"));
+
         UserProfile profile = getOrCreateProfile(userId);
         UserOnboardingProgress progress = getOrCreateProgress(userId);
 
@@ -708,26 +714,65 @@ public class UserService {
     }
 
     private boolean isProfileComplete(UserProfile profile) {
-        return profile.getNickname() != null
-                && profile.getGender() != null
+        return hasText(profile.getNickname())
+                && hasText(profile.getGender())
                 && profile.getAgeGroup() != null
 
-                && profile.getWorkDay() != null
-                && profile.getLeaveTime() != null
-                && profile.getComeTime() != null
-                && profile.getWorkStyle() != null
+                && hasText(profile.getWorkDay())
+                && hasText(profile.getLeaveTime())
+                && hasText(profile.getComeTime())
+                && hasText(profile.getWorkStyle())
 
                 && profile.getSleepHour() != null
 
-                && profile.getMakeupFrequency() != null
-                && profile.getSunscreenFrequency() != null
+                && hasText(profile.getMakeupFrequency())
+                && hasText(profile.getSunscreenFrequency())
 
                 && profile.getExerciseCount() != null
-                && profile.getSweatAmount() != null
+                && hasText(profile.getSweatAmount())
 
-                && profile.getSkinType() != null
-                && profile.getPersonalColor() != null
-                && profile.getConcerns() != null;
+                && hasText(profile.getSkinType())
+                && hasText(profile.getPersonalColor())
+                && hasText(profile.getConcerns());
+    }
+
+    private boolean isProfileEmpty(UserProfile profile) {
+        return !hasText(profile.getNickname())
+                && !hasText(profile.getGender())
+                && profile.getAgeGroup() == null
+                && !hasText(profile.getWorkDay())
+                && !hasText(profile.getLeaveTime())
+                && !hasText(profile.getComeTime())
+                && !hasText(profile.getWorkStyle())
+                && profile.getSleepHour() == null
+                && !hasText(profile.getMakeupFrequency())
+                && !hasText(profile.getSunscreenFrequency())
+                && profile.getExerciseCount() == null
+                && !hasText(profile.getSweatAmount())
+                && !hasText(profile.getSkinType())
+                && !hasText(profile.getConcerns())
+                && !hasText(profile.getPersonalColor());
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private String normalizeNullableText(String value, String fieldName) {
+        return value == null ? null : requireText(value, fieldName);
+    }
+
+    private String requireText(String value, String fieldName) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(fieldName + "은(는) 공백으로 저장할 수 없습니다.");
+        }
+        return value.trim();
+    }
+
+    private void updateTextIfPresent(String value, String fieldName, Consumer<String> setter) {
+        if (value != null) {
+            setter.accept(requireText(value, fieldName));
+        }
     }
 
     private void updateCompletionState(UserProfile profile, UserOnboardingProgress progress) {
@@ -885,8 +930,15 @@ public class UserService {
     }
 
     private UserResponseDto toDto(UserProfile profile) {
+        boolean profileCompleted = isProfileComplete(profile);
+
         return UserResponseDto.builder()
                 .userId(profile.getUserId())
+                .profileEmpty(isProfileEmpty(profile))
+                .profileCompleted(profileCompleted)
+                .onboardingStatus(profileCompleted ? "COMPLETE" : "INCOMPLETE")
+                .onboardingMode(profile.getOnboardingMode())
+                .onboardingStep(profile.getOnboardingStep())
                 .nickname(profile.getNickname())
                 .gender(profile.getGender())
                 .ageGroup(profile.getAgeGroup())

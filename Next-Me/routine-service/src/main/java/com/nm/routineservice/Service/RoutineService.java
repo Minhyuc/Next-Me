@@ -3,6 +3,7 @@ package com.nm.routineservice.Service;
 import com.nm.routineservice.Dto.AdjustRoutineRequestDto;
 import com.nm.routineservice.Dto.AiRoutineItemDto;
 import com.nm.routineservice.Dto.AiRoutineResultDto;
+import com.nm.routineservice.Dto.CharacterRewardResponseDto;
 import com.nm.routineservice.Dto.DailyRoutineResponseDto;
 import com.nm.routineservice.Dto.GenerateRoutineRequestDto;
 import com.nm.routineservice.Dto.RoutineCompletionDto;
@@ -42,6 +43,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.IntStream;
 
@@ -57,6 +59,7 @@ public class RoutineService {
     private final RoutineCompletionHistoryRepository historyRepository;
     private final UserRoutineContextClient contextClient;
     private final OpenAiRoutineService openAiRoutineService;
+    private final CharacterRewardClient characterRewardClient;
     private final ObjectMapper objectMapper;
     private final LocalTime defaultResetTime;
     private final String defaultZoneId;
@@ -68,6 +71,7 @@ public class RoutineService {
             RoutineCompletionHistoryRepository historyRepository,
             UserRoutineContextClient contextClient,
             OpenAiRoutineService openAiRoutineService,
+            CharacterRewardClient characterRewardClient,
             ObjectMapper objectMapper,
             @Value("${routine.default-reset-time}") String defaultResetTime,
             @Value("${routine.default-zone-id}") String defaultZoneId
@@ -78,6 +82,7 @@ public class RoutineService {
         this.historyRepository = historyRepository;
         this.contextClient = contextClient;
         this.openAiRoutineService = openAiRoutineService;
+        this.characterRewardClient = characterRewardClient;
         this.objectMapper = objectMapper;
         this.defaultResetTime = LocalTime.parse(defaultResetTime, TIME_FORMATTER);
         this.defaultZoneId = defaultZoneId;
@@ -150,13 +155,29 @@ public class RoutineService {
     @Transactional
     // 조회할 때도 마감 시간이 지난 미완료 항목을 영구 실패 상태로 갱신한다.
     public DailyRoutineResponseDto getToday(Long userId) {
-        return toResponse(getOrRollOverTodayPlan(userId));
+        RoutineSetting setting = getOrCreateSetting(userId);
+        return findOrRollOverTodayPlan(userId, setting)
+                .map(this::toResponse)
+                .orElseGet(() -> toEmptyResponse(setting));
     }
 
     @Transactional
     // 완료 변경 후 계획의 퍼센트와 최초 100% 완료 이력을 함께 갱신한다.
     public RoutineProgressResponseDto getTodayProgress(Long userId) {
-        DailyRoutinePlan plan = getOrRollOverTodayPlan(userId);
+        RoutineSetting setting = getOrCreateSetting(userId);
+        Optional<DailyRoutinePlan> optionalPlan = findOrRollOverTodayPlan(userId, setting);
+        if (optionalPlan.isEmpty()) {
+            return RoutineProgressResponseDto.builder()
+                    .routineGenerated(false)
+                    .routineDate(calculateRoutineDate(setting))
+                    .completedCount(0)
+                    .totalCount(0)
+                    .completionPercentage(0)
+                    .allCompleted(false)
+                    .build();
+        }
+
+        DailyRoutinePlan plan = optionalPlan.get();
         refreshExpiredLocks(plan);
         int totalCount = plan.getItems().size();
         int completedCount = (int) plan.getItems().stream()
@@ -164,6 +185,7 @@ public class RoutineService {
                 .count();
 
         return RoutineProgressResponseDto.builder()
+                .routineGenerated(true)
                 .planId(plan.getId())
                 .routineDate(plan.getRoutineDate())
                 .completedCount(completedCount)
@@ -192,7 +214,7 @@ public class RoutineService {
         today.updateProgress();
         planRepository.save(today);
         recordCompletionOnce(today);
-        return toResponse(today);
+        return toResponse(today, rewardCharacterIfCompleted(today));
     }
 
     @Transactional
@@ -258,7 +280,7 @@ public class RoutineService {
         plan.updateProgress();
         planRepository.save(plan);
         recordCompletionOnce(plan);
-        return toResponse(plan);
+        return toResponse(plan, rewardCharacterIfCompleted(plan));
     }
 
     @Transactional
@@ -309,14 +331,27 @@ public class RoutineService {
     private DailyRoutinePlan getOrRollOverTodayPlan(Long userId) {
         // 초기화 시각이 지나 새 routineDate가 되면 이전 기본 스냅샷을 복제한다.
         RoutineSetting setting = getOrCreateSetting(userId);
-        LocalDate today = calculateRoutineDate(setting);
+        return findOrRollOverTodayPlan(userId, setting)
+                .orElseThrow(() -> new IllegalStateException(
+                        "생성된 루틴이 없습니다. 먼저 오늘의 AI 루틴을 생성해주세요."
+                ));
+    }
 
-        return planRepository.findByUserIdAndRoutineDate(userId, today)
-                .orElseGet(() -> planRepository.findFirstByUserIdOrderByRoutineDateDesc(userId)
-                        .map(previous -> cloneForNewRoutineDate(previous, today, setting.getResetTime()))
-                        .orElseThrow(() -> new IllegalStateException(
-                                "생성된 루틴이 없습니다. 먼저 오늘의 AI 루틴을 생성해주세요."
-                        )));
+    private Optional<DailyRoutinePlan> findOrRollOverTodayPlan(
+            Long userId,
+            RoutineSetting setting
+    ) {
+        LocalDate today = calculateRoutineDate(setting);
+        Optional<DailyRoutinePlan> todayPlan =
+                planRepository.findByUserIdAndRoutineDate(userId, today);
+        if (todayPlan.isPresent()) {
+            return todayPlan;
+        }
+
+        return planRepository.findFirstByUserIdOrderByRoutineDateDesc(userId)
+                .map(previous -> cloneForNewRoutineDate(
+                        previous, today, setting.getResetTime()
+                ));
     }
 
     private DailyRoutinePlan cloneForNewRoutineDate(
@@ -556,6 +591,14 @@ public class RoutineService {
                 .build());
     }
 
+    private CharacterRewardResponseDto rewardCharacterIfCompleted(DailyRoutinePlan plan) {
+        // character-service가 날짜별 중복 요청을 막으므로 재시도되어도 캐릭터는 한 번만 지급된다.
+        if (plan.getCompletionPercentage() != 100) {
+            return null;
+        }
+        return characterRewardClient.reward(plan.getUserId(), plan.getRoutineDate());
+    }
+
     private int normalizeWindowMinutes(int minutes) {
         // AI가 비정상 값을 주더라도 제한 시간은 10~180분 범위로 보정한다.
         return Math.max(10, Math.min(minutes <= 0 ? 30 : minutes, 180));
@@ -658,6 +701,13 @@ public class RoutineService {
     }
 
     private DailyRoutineResponseDto toResponse(DailyRoutinePlan plan) {
+        return toResponse(plan, null);
+    }
+
+    private DailyRoutineResponseDto toResponse(
+            DailyRoutinePlan plan,
+            CharacterRewardResponseDto characterReward
+    ) {
         refreshExpiredLocks(plan);
         LocalDateTime now = currentLocalDateTime(plan.getUserId());
         LocalTime routineStartTime = findRoutineStartTime(
@@ -696,14 +746,28 @@ public class RoutineService {
                 })
                 .toList();
         return DailyRoutineResponseDto.builder()
+                .routineGenerated(true)
                 .planId(plan.getId())
                 .routineDate(plan.getRoutineDate())
                 .resetTime(plan.getResetTimeSnapshot())
                 .completionPercentage(plan.getCompletionPercentage())
                 .allCompleted(plan.getCompletionPercentage() == 100)
                 .firstCompletedAt(plan.getFirstCompletedAt())
+                .characterReward(characterReward)
                 .coachMessage(plan.getAdjustmentSummary())
                 .items(items)
+                .build();
+    }
+
+    private DailyRoutineResponseDto toEmptyResponse(RoutineSetting setting) {
+        return DailyRoutineResponseDto.builder()
+                .routineGenerated(false)
+                .routineDate(calculateRoutineDate(setting))
+                .resetTime(setting.getResetTime())
+                .completionPercentage(0)
+                .allCompleted(false)
+                .coachMessage("아직 생성된 루틴이 없습니다. 생성 버튼을 눌러 오늘의 AI 루틴을 만들어주세요.")
+                .items(List.of())
                 .build();
     }
 

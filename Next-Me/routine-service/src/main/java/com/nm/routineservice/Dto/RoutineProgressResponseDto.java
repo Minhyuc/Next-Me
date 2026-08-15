@@ -14,6 +14,7 @@ import java.time.LocalDate;
 /** 진행바 갱신에 필요한 최소 정보만 제공한다. */
 public class RoutineProgressResponseDto {
 
+    private boolean routineGenerated; // 최초 AI 루틴 생성 여부
     private Long planId;
     private LocalDate routineDate;
     private int completedCount; // 완료 항목 수

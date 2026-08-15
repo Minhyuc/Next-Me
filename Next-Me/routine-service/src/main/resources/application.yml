@@ -30,6 +30,10 @@ openai:
 services:
   user-service:
     url: ${USER_SERVICE_URL:http://localhost:8082}
+  character-service:
+    url: ${CHARACTER_SERVICE_URL:http://localhost:8086}
+    # 배포 환경에서는 CHARACTER_INTERNAL_KEY를 별도로 지정할 수 있다.
+    internal-key: ${CHARACTER_INTERNAL_KEY:${CREATE_JWT}}
 
 routine:
   # AI 추천값이 없거나 처음 설정을 만들 때 사용할 기본 날짜 경계

@@ -37,3 +37,15 @@ spring:
           uri: ${PERSONAL_COLOR_SERVICE_URL:http://localhost:8085}
           predicates:
             - Path=/personal-colors/**
+
+        # 캐릭터 보유 현황과 도감 조회 요청을 전용 서비스로 전달한다.
+        - id: character-service
+          uri: ${CHARACTER_SERVICE_URL:http://localhost:8086}
+          predicates:
+            - Path=/characters/**
+
+        # 프로필 기반 세안·스킨케어 성분 추천 요청을 전용 서비스로 전달한다.
+        - id: user-care-service
+          uri: ${USER_CARE_SERVICE_URL:http://localhost:8087}
+          predicates:
+            - Path=/user-care/**

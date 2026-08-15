@@ -1,0 +1,37 @@
+server:
+  # Gateway가 피부 관리 성분 추천 요청을 전달할 내부 포트
+  port: ${USER_CARE_SERVICE_PORT:8087}
+
+spring:
+  application:
+    name: user-care-service
+  datasource:
+    # 사용자별 추천 결과 이력을 저장하는 전용 MySQL 스키마
+    url: ${USER_CARE_DB_URL:jdbc:mysql://localhost:3306/NMUserCareData}
+    username: ${USER_CARE_DB_USERNAME:${DB_USERNAME:root}}
+    password: ${USER_CARE_DB_PASSWORD:${MYSQL_PASSWORD}}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+jwt:
+  secret: ${CREATE_JWT}
+
+openai:
+  api-key: ${OPENAI_API_KEY}
+  model: ${OPENAI_USER_CARE_MODEL:${OPENAI_MODEL:gpt-4o-mini}}
+  endpoint: ${OPENAI_RESPONSES_BASE_URL:https://api.openai.com/v1}
+
+services:
+  user-service:
+    url: ${USER_SERVICE_URL:http://localhost:8082}
+
+logging:
+  level:
+    org.hibernate.SQL: debug
+    org.hibernate.orm.jdbc.bind: trace

@@ -1,0 +1,2 @@
+# Spring 설정을 읽기 전에 공통 .env 값을 환경에 등록한다.
+org.springframework.boot.EnvironmentPostProcessor=com.nm.usercareservice.Processor.DotenvEnvironmentPostProcessor
