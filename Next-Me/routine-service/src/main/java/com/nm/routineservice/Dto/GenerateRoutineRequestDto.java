@@ -8,9 +8,9 @@ import lombok.Setter;
 @Getter
 @Setter
 @NoArgsConstructor
-/** 기본 루틴 생성 시 사용자가 선택적으로 덧붙일 자연어 조건이다. */
+/** 이전 클라이언트와의 요청 호환을 위해 유지하며 기본 루틴 생성에는 반영하지 않는다. */
 public class GenerateRoutineRequestDto {
 
     @Size(max = 1000, message = "추가 요청은 1,000자 이하로 입력해주세요.")
-    private String additionalRequest; // 비어 있으면 프로필과 선호도만 사용
+    private String additionalRequest; // 일회성 일정은 /today/adjust에서만 처리
 }

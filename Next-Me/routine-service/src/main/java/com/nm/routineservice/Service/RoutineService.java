@@ -45,13 +45,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
 @Service
 /** 루틴의 생성부터 일일 초기화, 시간 제한, 완료율, 완료 이력까지 관리하는 핵심 서비스다. */
 public class RoutineService {
 
+    private static final int MAX_ROUTINE_ITEMS = 10;
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
+    private static final Pattern EMBEDDED_TIME_PATTERN = Pattern.compile(
+            "(?<!\\d)([01]?\\d|2[0-3]):([0-5]\\d)(?::[0-5]\\d)?"
+    );
+    private static final Pattern KOREAN_TIME_PATTERN = Pattern.compile(
+            "(오전|오후)?\\s*(\\d{1,2})\\s*시(?:\\s*(\\d{1,2})\\s*분)?"
+    );
 
     private final RoutineSettingRepository settingRepository;
     private final DailyRoutinePlanRepository planRepository;
@@ -89,7 +98,7 @@ public class RoutineService {
     }
 
     @Transactional
-    // 현재 선호도와 같은 계획은 재사용하고, 선호도가 바뀌면 새 기본 루틴을 생성한다.
+    // 일정 조정된 현재 items를 재사용하지 않고 프로필과 선택 범주만으로 기본 루틴을 생성한다.
     public DailyRoutineResponseDto generateToday(
             Long userId,
             String authorizationHeader,
@@ -100,17 +109,20 @@ public class RoutineService {
         validateSelectedCategories(context.getSelectedCategories());
 
         RoutineSetting setting = getOrCreateSetting(userId);
-        LocalDate existingRoutineDate = calculateRoutineDate(setting);
-        var existingPlan = planRepository.findByUserIdAndRoutineDate(userId, existingRoutineDate);
-        if (existingPlan.isPresent()
-                && hasSameCategories(existingPlan.get(), context.getSelectedCategories())) {
-            return toResponse(existingPlan.get());
-        }
+        LocalDate previousRoutineDate = calculateRoutineDate(setting);
+        Optional<DailyRoutinePlan> previousPlan = planRepository.findByUserIdAndRoutineDate(
+                userId, previousRoutineDate
+        );
+        previousPlan.ifPresent(this::refreshExpiredLocks);
+        List<DailyRoutineItem> previousItems = previousPlan
+                .map(existing -> new ArrayList<>(existing.getItems()))
+                .orElseGet(ArrayList::new);
 
         ZonedDateTime currentDateTime = ZonedDateTime.now(ZoneId.of(setting.getZoneId()));
         AiRoutineResultDto aiResult = openAiRoutineService.generate(
                 context,
-                request == null ? null : request.getAdditionalRequest(),
+                // 기본 생성에는 일회성 자연어 일정 변경을 전달하지 않는다.
+                null,
                 currentDateTime
         );
 
@@ -126,27 +138,44 @@ public class RoutineService {
                         .routineDate(routineDate)
                         .resetTimeSnapshot(setting.getResetTime())
                         .build());
+        if (previousItems.isEmpty() && !plan.getItems().isEmpty()) {
+            previousItems = new ArrayList<>(plan.getItems());
+        }
 
-        List<DailyRoutineItem> baselineItems = toNewItems(
+        List<DailyRoutineItem> generatedItems = toNewItems(
                 aiResult.getItems(), context.getSelectedCategories(), Map.of()
+        );
+        generatedItems = sortAndReindexFromReset(generatedItems, aiResetTime);
+        int persistentCount = determinePersistentRoutineCount(
+                previousItems.size(), generatedItems.size(), context.getSelectedCategories()
+        );
+        List<DailyRoutineItem> baselineItems = selectPersistentBaselineItems(
+                generatedItems, persistentCount, context.getSelectedCategories()
         );
         baselineItems = sortAndReindexFromReset(baselineItems, aiResetTime);
 
-        // 일정 조정 전 원본을 스냅샷으로 저장해 다음 루틴 날짜에 복원한다.
-        plan.updateBaselineItemsJson(serializeBaselineItems(baselineItems));
-
-        // 완료 또는 마감 상태가 생긴 현재 계획은 다시 열지 않고 다음 루틴부터 새 선호도를 적용한다.
-        if (hasLockedItems(plan)) {
-            plan.updateAdjustmentSummary(
-                    "변경한 루틴 종류를 저장했어요. 현재 완료·마감 기록은 유지하고 다음 초기화부터 적용합니다."
-            );
-            planRepository.save(plan);
-            return toResponse(plan);
-        }
-
         plan.updateResetTimeSnapshot(aiResetTime);
-        plan.replaceItems(baselineItems);
-        plan.updateAdjustmentSummary(aiResult.getCoachMessage());
+        RegenerationMergeResult regeneration = previousItems.isEmpty()
+                ? new RegenerationMergeResult(baselineItems, 0, baselineItems.size())
+                : mergeRegeneratedItems(
+                        previousPlan.orElse(plan),
+                        plan,
+                        previousItems,
+                        baselineItems,
+                        context.getSelectedCategories(),
+                        currentDateTime.toLocalDateTime()
+                );
+        List<DailyRoutineItem> appliedItems = sortAndReindexFromReset(
+                regeneration.items(), aiResetTime
+        );
+
+        // 기본 루틴은 계속 유지한다. 특정 날짜의 완료 상태나 일정 조정 결과는 스냅샷에 섞지 않는다.
+        plan.updateBaselineItemsJson(serializeBaselineItems(baselineItems));
+        plan.replaceItems(appliedItems);
+        plan.updateAdjustmentSummary(aiResult.getCoachMessage()
+                + " 기본 루틴 " + baselineItems.size() + "개를 저장했어요. 오늘 이미 시작된 "
+                + regeneration.preservedPastCount() + "개는 유지하고, 이후 "
+                + regeneration.replacedFutureCount() + "개를 즉시 반영했어요.");
         plan.updateProgress();
         planRepository.save(plan);
         return toResponse(plan);
@@ -224,55 +253,36 @@ public class RoutineService {
             AdjustRoutineRequestDto request
     ) {
         DailyRoutinePlan plan = getOrRollOverTodayPlan(userId);
+        refreshExpiredLocks(plan);
+        List<DailyRoutineItem> before = new ArrayList<>(plan.getItems());
+        if (before.stream().noneMatch(item -> !item.isCompleted() && !item.isMissed())) {
+            plan.updateAdjustmentSummary(
+                    "변경 가능한 루틴이 없습니다. 이미 완료되었거나 마감된 항목은 수정할 수 없습니다."
+            );
+            planRepository.save(plan);
+            return toResponse(plan);
+        }
+
         UserRoutineContextDto context = contextClient.getContext(authorizationHeader);
         validateSelectedCategories(context.getSelectedCategories());
-
-        List<DailyRoutineItem> before = new ArrayList<>(plan.getItems());
-        refreshExpiredLocks(plan);
-        before = new ArrayList<>(plan.getItems());
         AiRoutineResultDto result = openAiRoutineService.adjust(
                 context, before, plan.getRoutineDate(), request.getMessage()
         );
 
-        Map<Long, Boolean> completedById = new HashMap<>();
-        before.forEach(item -> completedById.put(item.getId(), item.isCompleted()));
-
-        // 이미 마감 실패한 항목은 AI가 다시 살리거나 수정하지 못하게 제외한다.
-        Set<Long> missedIds = new HashSet<>();
-        // AI 응답에서 빠져도 이미 완료된 항목은 보상 계산을 위해 유지한다.
-        before.stream()
-                .filter(DailyRoutineItem::isMissed)
-                .map(DailyRoutineItem::getId)
-                .forEach(missedIds::add);
-
-        List<DailyRoutineItem> adjusted = toNewItems(
-                result.getItems().stream()
-                        .filter(item -> item.getOriginalItemId() == null
-                                || !missedIds.contains(item.getOriginalItemId()))
-                        .toList(),
-                context.getSelectedCategories(), completedById
+        // AI는 변경이 필요한 일부 항목만 반환할 수 있다. 응답에서 빠진 항목은 기존 값 그대로 유지한다.
+        AdjustmentMergeResult mergeResult = mergeAdjustedItems(
+                result.getItems(), context.getSelectedCategories(), before
         );
-
-        Set<Long> referencedIds = new HashSet<>();
-        result.getItems().stream()
-                .map(AiRoutineItemDto::getOriginalItemId)
-                .filter(id -> id != null)
-                .forEach(referencedIds::add);
-
-        // 마감 실패 항목도 영구 false 기록으로 유지한다.
-        before.stream()
-                .filter(DailyRoutineItem::isCompleted)
-                .filter(item -> context.getSelectedCategories().contains(item.getCategory()))
-                .filter(item -> !referencedIds.contains(item.getId()))
-                .forEach(item -> adjusted.add(copyItem(item, true, adjusted.size())));
-
-        before.stream()
-                .filter(DailyRoutineItem::isMissed)
-                .filter(item -> context.getSelectedCategories().contains(item.getCategory()))
-                .forEach(item -> adjusted.add(copyItem(item, false, adjusted.size())));
+        if (mergeResult.appliedChanges() == 0) {
+            plan.updateAdjustmentSummary(
+                    "입력한 일정을 확인했지만 실제로 변경할 수 있는 루틴이 없습니다. 완료되었거나 마감된 항목은 유지됩니다."
+            );
+            planRepository.save(plan);
+            return toResponse(plan);
+        }
 
         List<DailyRoutineItem> orderedAdjusted = sortAndReindexFromReset(
-                adjusted, plan.getResetTimeSnapshot()
+                mergeResult.items(), plan.getResetTimeSnapshot()
         );
 
         plan.replaceItems(orderedAdjusted);
@@ -394,8 +404,12 @@ public class RoutineService {
             LocalTime scheduledTime;
             try {
                 category = RoutineCategory.valueOf(aiItem.getCategory());
-                scheduledTime = LocalTime.parse(aiItem.getScheduledTime(), TIME_FORMATTER);
-            } catch (IllegalArgumentException | DateTimeParseException exception) {
+                scheduledTime = parseAiScheduledTime(aiItem.getScheduledTime());
+            } catch (IllegalArgumentException exception) {
+                continue;
+            }
+
+            if (scheduledTime == null) {
                 continue;
             }
 
@@ -428,6 +442,367 @@ public class RoutineService {
         return items;
     }
 
+    private AdjustmentMergeResult mergeAdjustedItems(
+            List<AiRoutineItemDto> aiItems,
+            Set<RoutineCategory> selectedCategories,
+            List<DailyRoutineItem> currentItems
+    ) {
+        Map<Long, DailyRoutineItem> currentById = new HashMap<>();
+        currentItems.stream()
+                .filter(item -> item.getId() != null)
+                .forEach(item -> currentById.put(item.getId(), item));
+
+        List<DailyRoutineItem> merged = new ArrayList<>();
+        Set<Long> adjustedOriginalIds = new HashSet<>();
+        int appliedChanges = 0;
+        int newlyAddedItems = 0;
+
+        for (AiRoutineItemDto aiItem : aiItems == null ? List.<AiRoutineItemDto>of() : aiItems) {
+            RoutineCategory category;
+            try {
+                category = RoutineCategory.valueOf(aiItem.getCategory());
+            } catch (IllegalArgumentException | NullPointerException exception) {
+                continue;
+            }
+
+            LocalTime scheduledTime = parseAiScheduledTime(aiItem.getScheduledTime());
+            if (!selectedCategories.contains(category)
+                    || scheduledTime == null
+                    || aiItem.getTitle() == null || aiItem.getTitle().isBlank()
+                    || aiItem.getDescription() == null || aiItem.getDescription().isBlank()) {
+                continue;
+            }
+
+            DailyRoutineItem original = null;
+            if (aiItem.getOriginalItemId() != null) {
+                original = currentById.get(aiItem.getOriginalItemId());
+                // 존재하지 않는 ID, 중복 변경, 카테고리 변경, 완료·마감 항목 변경은 모두 거부한다.
+                if (original == null
+                        || adjustedOriginalIds.contains(aiItem.getOriginalItemId())
+                        || original.getCategory() != category
+                        || original.isCompleted()
+                        || original.isMissed()) {
+                    continue;
+                }
+                if (hasSameRoutineContent(original, aiItem, scheduledTime)) {
+                    continue;
+                }
+                adjustedOriginalIds.add(aiItem.getOriginalItemId());
+            } else if (currentItems.size() + newlyAddedItems >= MAX_ROUTINE_ITEMS) {
+                // 일시적인 일정 조정에서도 루틴 총개수는 10개를 넘지 않는다.
+                continue;
+            } else {
+                newlyAddedItems++;
+            }
+
+            merged.add(DailyRoutineItem.builder()
+                    .category(category)
+                    .title(aiItem.getTitle().trim())
+                    .description(aiItem.getDescription().trim())
+                    .scheduledTime(scheduledTime)
+                    .completionWindowMinutes(normalizeWindowMinutes(
+                            aiItem.getCompletionWindowMinutes()
+                    ))
+                    .sortOrder(merged.size())
+                    .completed(false)
+                    .build());
+            appliedChanges++;
+        }
+
+        // AI가 생략했거나 잘못 반환한 항목도 사라지지 않게 원본을 그대로 합친다.
+        currentItems.stream()
+                .filter(item -> selectedCategories.contains(item.getCategory()))
+                .filter(item -> item.getId() == null || !adjustedOriginalIds.contains(item.getId()))
+                .forEach(item -> merged.add(copyItem(item, item.isCompleted(), merged.size())));
+
+        if (merged.isEmpty()) {
+            throw new IllegalStateException("조정할 수 있는 루틴 항목이 없습니다.");
+        }
+        ensureSelectedCategoriesPresent(merged, selectedCategories);
+        return new AdjustmentMergeResult(merged, appliedChanges);
+    }
+
+    RegenerationMergeResult mergeRegeneratedItems(
+            DailyRoutinePlan previousPlan,
+            DailyRoutinePlan targetPlan,
+            List<DailyRoutineItem> previousItems,
+            List<DailyRoutineItem> aiGeneratedItems,
+            Set<RoutineCategory> selectedCategories,
+            LocalDateTime now
+    ) {
+        List<DailyRoutineItem> preservedPast = previousItems.stream()
+                .filter(item -> isAlreadyStarted(previousPlan, item, now))
+                .sorted(Comparator.comparingInt(DailyRoutineItem::getSortOrder))
+                .map(item -> copyItem(item, item.isCompleted(), item.getSortOrder()))
+                .toList();
+        List<DailyRoutineItem> previousFuture = previousItems.stream()
+                .filter(item -> !isAlreadyStarted(previousPlan, item, now))
+                .sorted(Comparator.comparingInt(DailyRoutineItem::getSortOrder))
+                .toList();
+
+        int futureSlots = Math.max(0, aiGeneratedItems.size() - preservedPast.size());
+        List<DailyRoutineItem> futureCandidates = aiGeneratedItems.stream()
+                .filter(item -> now.isBefore(calculateAvailableAt(targetPlan, item)))
+                .sorted(Comparator.comparing(item -> calculateAvailableAt(targetPlan, item)))
+                .toList();
+        List<DailyRoutineItem> selectedFuture = selectDistributedFutureItems(
+                futureCandidates,
+                futureSlots,
+                preservedPast,
+                selectedCategories
+        );
+
+        // AI 후보가 부족할 때만 기존의 아직 시작하지 않은 항목으로 빈자리를 채운다.
+        for (DailyRoutineItem fallback : previousFuture) {
+            if (selectedFuture.size() >= futureSlots) {
+                break;
+            }
+            selectedFuture.add(copyItem(fallback, fallback.isCompleted(), selectedFuture.size()));
+        }
+
+        List<DailyRoutineItem> merged = new ArrayList<>(preservedPast);
+        merged.addAll(selectedFuture.stream()
+                .limit(futureSlots)
+                .map(item -> copyItem(item, false, merged.size()))
+                .toList());
+        if (merged.size() > MAX_ROUTINE_ITEMS) {
+            throw new IllegalStateException("루틴은 최대 10개까지만 생성할 수 있습니다.");
+        }
+        return new RegenerationMergeResult(
+                merged,
+                preservedPast.size(),
+                selectedFuture.stream().limit(futureSlots).toList().size()
+        );
+    }
+
+    private int determinePersistentRoutineCount(
+            int previousCount,
+            int generatedCount,
+            Set<RoutineCategory> selectedCategories
+    ) {
+        int minimumCount = selectedCategories.size();
+        // 수면·기상을 선택한 경우 기상과 취침이 각각 필요하므로 한 자리를 추가한다.
+        if (selectedCategories.contains(RoutineCategory.SLEEP_WAKE)) {
+            minimumCount++;
+        }
+        int desiredCount = previousCount > 0
+                ? Math.max(previousCount, minimumCount)
+                : generatedCount;
+        return Math.min(MAX_ROUTINE_ITEMS, Math.min(desiredCount, generatedCount));
+    }
+
+    private List<DailyRoutineItem> selectPersistentBaselineItems(
+            List<DailyRoutineItem> candidates,
+            int count,
+            Set<RoutineCategory> selectedCategories
+    ) {
+        if (candidates.size() <= count) {
+            return new ArrayList<>(candidates);
+        }
+
+        List<DailyRoutineItem> selected = new ArrayList<>();
+        Set<DailyRoutineItem> used = new HashSet<>();
+
+        if (selectedCategories.contains(RoutineCategory.SLEEP_WAKE)) {
+            addBestCandidate(candidates, selected, used, item ->
+                    item.getCategory() == RoutineCategory.SLEEP_WAKE
+                            && (containsWakeKeyword(item.getTitle())
+                            || containsWakeKeyword(item.getDescription())));
+            addBestCandidate(candidates, selected, used, item ->
+                    item.getCategory() == RoutineCategory.SLEEP_WAKE
+                            && (containsSleepKeyword(item.getTitle())
+                            || containsSleepKeyword(item.getDescription())));
+        }
+
+        for (RoutineCategory category : selectedCategories) {
+            if (selected.size() >= count || category == RoutineCategory.SLEEP_WAKE) {
+                continue;
+            }
+            addBestCandidate(candidates, selected, used,
+                    item -> item.getCategory() == category);
+        }
+
+        while (selected.size() < count && used.size() < candidates.size()) {
+            addBestCandidate(candidates, selected, used, item -> true);
+        }
+        ensureSelectedCategoriesPresent(selected, selectedCategories);
+        return selected;
+    }
+
+    private void addBestCandidate(
+            List<DailyRoutineItem> candidates,
+            List<DailyRoutineItem> selected,
+            Set<DailyRoutineItem> used,
+            java.util.function.Predicate<DailyRoutineItem> condition
+    ) {
+        var matching = candidates.stream()
+                .filter(item -> !used.contains(item))
+                .filter(condition);
+        DailyRoutineItem candidate = selected.isEmpty()
+                ? matching.min(Comparator.comparing(DailyRoutineItem::getScheduledTime)).orElse(null)
+                : matching.max(Comparator.comparingInt(
+                        item -> minimumTimeDistance(item, selected)
+                )).orElse(null);
+        if (candidate != null) {
+            selected.add(candidate);
+            used.add(candidate);
+        }
+    }
+
+    private List<DailyRoutineItem> selectDistributedFutureItems(
+            List<DailyRoutineItem> candidates,
+            int count,
+            List<DailyRoutineItem> preserved,
+            Set<RoutineCategory> selectedCategories
+    ) {
+        if (count <= 0 || candidates.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        List<DailyRoutineItem> selected = new ArrayList<>();
+        Set<DailyRoutineItem> used = new HashSet<>();
+        Set<RoutineCategory> covered = new HashSet<>();
+        preserved.forEach(item -> covered.add(item.getCategory()));
+
+        // 이미 지난 항목에 없는 선택 카테고리를 우선 확보한다.
+        for (RoutineCategory category : selectedCategories) {
+            if (selected.size() >= count || covered.contains(category)) {
+                continue;
+            }
+            List<DailyRoutineItem> anchors = new ArrayList<>(preserved);
+            anchors.addAll(selected);
+            candidates.stream()
+                    .filter(item -> item.getCategory() == category)
+                    .filter(item -> !used.contains(item))
+                    .max(Comparator.comparingInt(item -> minimumTimeDistance(item, anchors)))
+                    .ifPresent(item -> {
+                        selected.add(item);
+                        used.add(item);
+                        covered.add(category);
+                    });
+        }
+
+        // 남은 자리는 기존 선택 시각들과 가장 멀리 떨어진 후보부터 골라 하루에 고르게 분산한다.
+        while (selected.size() < count && used.size() < candidates.size()) {
+            List<DailyRoutineItem> anchors = new ArrayList<>(preserved);
+            anchors.addAll(selected);
+            DailyRoutineItem next = candidates.stream()
+                    .filter(item -> !used.contains(item))
+                    .max(Comparator.comparingInt(item -> minimumTimeDistance(item, anchors)))
+                    .orElse(null);
+            if (next == null) {
+                break;
+            }
+            selected.add(next);
+            used.add(next);
+        }
+        return selected;
+    }
+
+    private int minimumTimeDistance(
+            DailyRoutineItem candidate,
+            List<DailyRoutineItem> anchors
+    ) {
+        if (anchors.isEmpty()) {
+            return candidate.getScheduledTime().toSecondOfDay();
+        }
+        return anchors.stream()
+                .mapToInt(anchor -> circularTimeDistance(
+                        candidate.getScheduledTime(), anchor.getScheduledTime()
+                ))
+                .min()
+                .orElse(0);
+    }
+
+    private int circularTimeDistance(LocalTime first, LocalTime second) {
+        int difference = Math.abs(first.toSecondOfDay() - second.toSecondOfDay());
+        return Math.min(difference, 24 * 60 * 60 - difference);
+    }
+
+    private boolean isAlreadyStarted(
+            DailyRoutinePlan plan,
+            DailyRoutineItem item,
+            LocalDateTime now
+    ) {
+        return !now.isBefore(calculateAvailableAt(plan, item));
+    }
+
+    record RegenerationMergeResult(
+            List<DailyRoutineItem> items,
+            int preservedPastCount,
+            int replacedFutureCount
+    ) {
+    }
+
+    private boolean hasSameRoutineContent(
+            DailyRoutineItem original,
+            AiRoutineItemDto adjusted,
+            LocalTime adjustedTime
+    ) {
+        return original.getTitle().equals(adjusted.getTitle().trim())
+                && original.getDescription().equals(adjusted.getDescription().trim())
+                && original.getScheduledTime().equals(adjustedTime)
+                && normalizeWindowMinutes(original.getCompletionWindowMinutes())
+                == normalizeWindowMinutes(adjusted.getCompletionWindowMinutes());
+    }
+
+    private record AdjustmentMergeResult(
+            List<DailyRoutineItem> items,
+            int appliedChanges
+    ) {
+    }
+
+    private LocalTime parseAiScheduledTime(String rawTime) {
+        if (rawTime == null || rawTime.isBlank()) {
+            return null;
+        }
+
+        String value = rawTime.trim();
+        try {
+            return LocalTime.parse(value, TIME_FORMATTER);
+        } catch (DateTimeParseException ignored) {
+            // 이전 AI 응답과의 호환을 위해 초가 포함된 ISO 시각도 허용한다.
+        }
+        try {
+            LocalTime parsed = LocalTime.parse(value, DateTimeFormatter.ISO_LOCAL_TIME);
+            return parsed.withSecond(0).withNano(0);
+        } catch (DateTimeParseException ignored) {
+            // ISO 날짜·시간 문자열 안에 포함된 HH:mm도 아래에서 찾아낸다.
+        }
+
+        Matcher embeddedTime = EMBEDDED_TIME_PATTERN.matcher(value);
+        if (embeddedTime.find()) {
+            return LocalTime.of(
+                    Integer.parseInt(embeddedTime.group(1)),
+                    Integer.parseInt(embeddedTime.group(2))
+            );
+        }
+
+        Matcher koreanTime = KOREAN_TIME_PATTERN.matcher(value);
+        if (!koreanTime.find()) {
+            return null;
+        }
+        int hour = Integer.parseInt(koreanTime.group(2));
+        int minute = koreanTime.group(3) == null ? 0 : Integer.parseInt(koreanTime.group(3));
+        if (minute > 59) {
+            return null;
+        }
+
+        String meridiem = koreanTime.group(1);
+        if (meridiem == null) {
+            return hour <= 23 ? LocalTime.of(hour, minute) : null;
+        }
+        if (hour < 1 || hour > 12) {
+            return null;
+        }
+        if ("오전".equals(meridiem)) {
+            hour = hour == 12 ? 0 : hour;
+        } else {
+            hour = hour == 12 ? 12 : hour + 12;
+        }
+        return LocalTime.of(hour, minute);
+    }
+
     private void ensureSelectedCategoriesPresent(
             List<DailyRoutineItem> items,
             Set<RoutineCategory> selectedCategories
@@ -439,21 +814,6 @@ public class RoutineService {
         if (!missingCategories.isEmpty()) {
             throw new IllegalStateException("AI 루틴에서 선택한 범주가 누락되었습니다: " + missingCategories);
         }
-    }
-
-    private boolean hasSameCategories(
-            DailyRoutinePlan plan,
-            Set<RoutineCategory> selectedCategories
-    ) {
-        Set<RoutineCategory> currentCategories = new HashSet<>();
-        // 일정 조정된 현재 항목보다 다음 날 복원될 기본 스냅샷을 기준으로 비교한다.
-        readBaselineItems(plan).forEach(item -> currentCategories.add(item.getCategory()));
-        return currentCategories.equals(selectedCategories);
-    }
-
-    private boolean hasLockedItems(DailyRoutinePlan plan) {
-        return plan.getItems().stream()
-                .anyMatch(item -> item.isCompleted() || item.isMissed());
     }
 
     private List<DailyRoutineItem> sortAndReindexFromReset(
@@ -497,6 +857,11 @@ public class RoutineService {
         return value != null && (value.contains("기상") || value.contains("일어나"));
     }
 
+    private boolean containsSleepKeyword(String value) {
+        return value != null && (value.contains("취침") || value.contains("잠자리")
+                || value.contains("잠들") || value.contains("수면"));
+    }
+
     private DailyRoutineItem copyItem(DailyRoutineItem source, boolean completed, int sortOrder) {
         DailyRoutineItem copy = DailyRoutineItem.builder()
                 .category(source.getCategory())
@@ -510,7 +875,7 @@ public class RoutineService {
                 .completed(false)
                 .build();
         if (completed) {
-            copy.changeCompleted(true);
+            copy.inheritCompletedStatus(source.getCompletedAt());
         }
         if (source.isMissed()) {
             copy.markMissed();

@@ -83,6 +83,15 @@ public class DailyRoutineItem {
         this.completedAt = completed ? LocalDateTime.now() : null;
     }
 
+    public void inheritCompletedStatus(LocalDateTime previousCompletedAt) {
+        // 기본 루틴을 다시 생성해도 같은 행동의 기존 완료 시각을 유지한다.
+        this.missed = false;
+        this.completed = true;
+        this.completedAt = previousCompletedAt == null
+                ? LocalDateTime.now()
+                : previousCompletedAt;
+    }
+
     public void markMissed() {
         // 완료하지 않은 항목만 영구 미완료 상태로 잠근다.
         if (!completed) {

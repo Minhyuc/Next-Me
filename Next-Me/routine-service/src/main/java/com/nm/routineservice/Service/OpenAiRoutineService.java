@@ -28,23 +28,44 @@ public class OpenAiRoutineService {
     private static final String INSTRUCTIONS = """
             당신은 Next-Me의 일일 루틴 코치입니다.
 
+            기본 루틴 생성 요청인 경우:
+            - profile, routine_preferences, selected_categories에 저장된 평소 생활 패턴만 사용하세요.
+            - 이전 당일 루틴, 이전 일정 조정 내용, 일회성 야근·약속은 기본 루틴에 반영하지 마세요.
+            - 일회성 일정 변화는 일정 조정 요청에서만 처리합니다.
+
             목표:
             - 사용자 프로필과 selected_categories를 근거로 오늘 실천 가능한 루틴을 만드세요.
+            - 먼저 프로필에서 기상, 출근·등교, 식사, 외부 활동, 귀가, 취침으로 이어지는
+              사용자의 하루 시간축을 파악한 다음 각 행동을 가장 자연스러운 시각에 배치하세요.
+            - recommended_reset_time 직후부터 항목을 기계적으로 연속 배치하지 마세요.
+            - 하루 전체에 수행할 행동이 있다면 아침, 낮, 저녁의 실제 생활 시각에 나누어 배치하세요.
+            - 모든 행동이 아침처럼 짧은 시간대에 모이는 것이 사용자에게 명확히 최적일 때만
+              집중 배치를 허용하고, 그 판단 이유를 coach_message에 설명하세요.
             - selected_categories에 없는 범주의 항목은 절대 만들지 마세요.
             - selected_categories의 모든 범주를 빠짐없이 포함하고 범주마다 최소 한 개의 항목을 만드세요.
+            - 범주마다 무조건 한 개만 만드는 것이 아니라 하루 동안 실제로 필요한 횟수를 판단하세요.
+            - 루틴은 전체 합계가 최대 10개가 되도록 만드세요.
+            - 항목이 5개 이상이면 특별한 생활 근거가 없는 한 아침, 낮, 저녁에 최소 한 항목씩 배치하세요.
             - 각 항목은 한 번에 완료 여부를 체크할 수 있는 구체적인 행동이어야 합니다.
             - 사용자의 출퇴근, 수면, 운동, 피부 정보를 고려해 서로 겹치지 않는 현실적인 시간을 정하세요.
             - SLEEP_WAKE가 selected_categories에 있을 때만 기상과 취침 항목을 생성하세요.
-            - SLEEP_WAKE가 선택되었다면 기상 항목을 하루의 첫 항목으로, 취침 항목을 마지막 항목으로 배치하세요.
+            - SLEEP_WAKE가 선택되었다면 기상과 취침을 각각 별도 항목으로 반드시 만들고,
+              기상 항목을 하루의 첫 항목으로, 취침 항목을 마지막 항목으로 배치하세요.
             - SLEEP_WAKE가 선택되지 않았다면 프로필의 기상·취침 정보는 다른 루틴의 적절한 시각과
               recommended_reset_time을 정하는 내부 문맥으로만 사용하고, 기상·취침 항목은 결과에 절대 넣지 마세요.
             - SLEEP_WAKE가 선택되지 않은 결과는 사용자가 선택한 범주 중 가장 이른 행동부터 시작하세요.
             - CLEANSING이 선택되었다면 세안 항목을 반드시 별도로 만들고 피부 타입에 맞는
               클렌저 유형 또는 성분, 세안할 시각, 세안 방법을 description에 구체적으로 적으세요.
+            - 아침 세안과 귀가 후 또는 저녁 세안이 모두 필요하다면 서로 다른 시각의 항목으로 만드세요.
+            - 화장, 자외선 차단제, 외부 활동 정보가 있으면 귀가 후 세안 필요성을 우선 검토하세요.
             - 예: 외출 후 복귀 시각부터 30분 이내에 약산성 클렌징폼으로 미지근하게 세안하세요.
             - SKIN_CARE가 선택되었다면 세안과 별도의 항목을 반드시 만들고 피부 타입과 고민에 맞는
               토너·세럼·보습제 등의 제품 유형 또는 성분, 바르는 순서, 실행 시점을 description에 적으세요.
+            - 아침 보호 루틴과 저녁 회복 루틴이 모두 적합하다면 별도 항목으로 나누세요.
             - CLEANSING과 SKIN_CARE를 하나의 항목이나 다른 category로 합치지 마세요.
+            - DIET가 선택되었다면 프로필의 실제 식사 패턴을 반영하되, 여러 끼를 먹는 사용자라면
+              아침 한 끼만 만들지 말고 점심과 저녁을 각각 현실적인 시각에 배치하세요.
+            - EXERCISE는 출퇴근·식사·수면과 충돌하지 않는 시간 중 지속하기 가장 좋은 시각을 선택하세요.
             - completion_window_minutes는 해당 시각부터 완료할 수 있는 제한 시간이며 10~180분 사이로 정하세요.
             - 세안과 스킨케어는 보통 20~40분, 운동·식사는 현실적인 수행 시간을 고려해 정하세요.
             - 의료 진단이나 처방을 하지 마세요.
@@ -61,11 +82,15 @@ public class OpenAiRoutineService {
             일정 조정 요청인 경우:
             - 사용자가 이미 완료한 항목은 유지하고 original_item_id를 그대로 반환하세요.
             - 사용자의 일정 변경으로 실제 영향을 받는 미완료 항목만 시간 또는 내용을 조정하세요.
-            - 일정 변경과 무관한 항목은 시간과 내용을 바꾸지 말고 original_item_id를 그대로 반환하세요.
-            - 유지하는 기존 항목도 original_item_id를 반환하세요.
+            - 응답 items에는 영향을 받아 실제로 변경할 미완료 항목만 반환해도 됩니다.
+            - 변경하지 않을 기존 항목은 응답에서 생략하세요. 서버가 현재 루틴을 그대로 유지합니다.
+            - 기존 항목을 변경할 때는 반드시 해당 항목의 original_item_id를 반환하세요.
+            - 새 항목이 꼭 필요한 경우에만 original_item_id를 null로 반환하세요.
             - 조정 결과는 현재 routine_date 한 날짜에만 적용되는 임시 루틴입니다.
             - '오늘' 같은 상대 날짜 표현은 입력의 routine_date를 기준으로 해석하세요.
             - 사용자가 말한 시각과 프로필의 평소 출퇴근·수면 시간을 비교해 충돌하는 항목을 판단하세요.
+            - 예를 들어 사용자가 '오늘 오후 7시에 퇴근해'라고 말하면 19:00 이후로 영향을 받는
+              저녁 식사, 운동, 귀가 후 세안·스킨케어 등의 미완료 항목만 현실적인 시각으로 조정하세요.
 
             category는 CLEANSING, SKIN_CARE, SLEEP_WAKE, DIET, EXERCISE 중 하나여야 합니다.
             scheduled_time은 24시간제 HH:mm 형식이어야 합니다.
@@ -107,15 +132,18 @@ public class OpenAiRoutineService {
         AiRoutineResultDto result = callOpenAi(input);
         Set<String> missing = findMissingCategories(context, result);
         Set<String> insufficientDetails = findInsufficientSkinCareDetails(context, result);
-        // 선택 범주 또는 피부 관리 제품 정보가 부족하면 한 번 교정 요청한 뒤 다시 검증한다.
-        if (!missing.isEmpty() || !insufficientDetails.isEmpty()) {
+        Set<String> coverageConcerns = findDailyCoverageConcerns(context, result);
+        // 선택 범주, 피부 관리 정보, 하루 분포가 부족하면 AI가 전체 시간축을 한 번 더 검토한다.
+        if (!missing.isEmpty() || !insufficientDetails.isEmpty() || !coverageConcerns.isEmpty()) {
             input.put("required_missing_categories", missing);
             input.put("required_detailed_categories", insufficientDetails);
-            input.put("correction", "누락 범주를 포함하고 세안·스킨케어에는 제품 유형 또는 성분, 순서와 시각을 구체적으로 적어 전체 결과를 다시 생성하세요.");
+            input.put("daily_coverage_concerns", coverageConcerns);
+            input.put("correction", "루틴은 최대 10개로 제한하고 사용자의 기상부터 취침까지 하루 전체 시간축을 다시 검토하세요. 누락 범주와 기상·취침을 보완하고, 세안·스킨케어에는 제품 유형 또는 성분을 구체적으로 적으세요. 항목이 5개 이상이면 아침·낮·저녁에 최소 한 항목씩 배치하고, 여러 끼의 식사와 귀가 후 관리가 필요하면 별도 항목으로 나누세요.");
             result = callOpenAi(input);
         }
         ensureAllSelectedCategories(context, result);
         ensureSkinCareDetails(context, result);
+        ensureRequiredDailyCoverage(context, result);
         return result;
     }
 
@@ -147,16 +175,18 @@ public class OpenAiRoutineService {
         input.put("current_items", items);
         input.put("user_schedule_change", changeRequest);
         AiRoutineResultDto result = callOpenAi(input);
-        Set<String> missing = findMissingCategories(context, result);
-        Set<String> insufficientDetails = findInsufficientSkinCareDetails(context, result);
-        if (!missing.isEmpty() || !insufficientDetails.isEmpty()) {
-            input.put("required_missing_categories", missing);
+        Set<String> insufficientDetails = findInsufficientReturnedSkinCareDetails(result);
+        if (!insufficientDetails.isEmpty()) {
             input.put("required_detailed_categories", insufficientDetails);
-            input.put("correction", "일정과 무관한 기존 범주를 삭제하지 말고 세안·스킨케어 제품 정보도 구체적으로 적어 전체 결과를 다시 반환하세요.");
+            input.put("correction", "영향받는 항목만 반환하되, 변경하는 세안·스킨케어 항목에는 제품 유형 또는 성분과 실행 방법을 구체적으로 적어 다시 반환하세요.");
             result = callOpenAi(input);
         }
-        ensureAllSelectedCategories(context, result);
-        ensureSkinCareDetails(context, result);
+        Set<String> remainingInsufficient = findInsufficientReturnedSkinCareDetails(result);
+        if (!remainingInsufficient.isEmpty()) {
+            throw new IllegalStateException(
+                    "AI 피부 관리 루틴의 제품·성분 정보가 부족합니다: " + remainingInsufficient
+            );
+        }
         return result;
     }
 
@@ -181,11 +211,14 @@ public class OpenAiRoutineService {
         itemProperties.put("original_item_id", Map.of("type", List.of("integer", "null")));
         itemProperties.put("category", Map.of(
                 "type", "string",
-                "enum", List.of("CLEANSING", "SKIN_CARE", "PERSONAL_COLOR", "SLEEP_WAKE", "DIET", "EXERCISE")
+                "enum", List.of("CLEANSING", "SKIN_CARE", "SLEEP_WAKE", "DIET", "EXERCISE")
         ));
         itemProperties.put("title", Map.of("type", "string"));
         itemProperties.put("description", Map.of("type", "string"));
-        itemProperties.put("scheduled_time", Map.of("type", "string"));
+        itemProperties.put("scheduled_time", Map.of(
+                "type", "string",
+                "pattern", "^([01]\\d|2[0-3]):[0-5]\\d$"
+        ));
         itemProperties.put("completion_window_minutes", Map.of(
                 "type", "integer", "minimum", 10, "maximum", 180
         ));
@@ -201,8 +234,15 @@ public class OpenAiRoutineService {
 
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("coach_message", Map.of("type", "string"));
-        properties.put("recommended_reset_time", Map.of("type", "string"));
-        properties.put("items", Map.of("type", "array", "items", itemSchema));
+        properties.put("recommended_reset_time", Map.of(
+                "type", "string",
+                "pattern", "^([01]\\d|2[0-3]):[0-5]\\d$"
+        ));
+        properties.put("items", Map.of(
+                "type", "array",
+                "items", itemSchema,
+                "maxItems", 10
+        ));
 
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
@@ -325,6 +365,143 @@ public class OpenAiRoutineService {
             insufficient.add("SKIN_CARE");
         }
         return insufficient;
+    }
+
+    private Set<String> findInsufficientReturnedSkinCareDetails(AiRoutineResultDto result) {
+        Set<String> returnedCategories = new HashSet<>();
+        result.getItems().forEach(item -> returnedCategories.add(item.getCategory()));
+
+        Set<String> insufficient = new HashSet<>();
+        if (returnedCategories.contains("CLEANSING")
+                && !hasDetailedSkinCareItem(result, "CLEANSING", List.of(
+                "클렌저", "클렌징폼", "세안제", "클렌징 오일", "클렌징 워터", "약산성"
+        ))) {
+            insufficient.add("CLEANSING");
+        }
+        if (returnedCategories.contains("SKIN_CARE")
+                && !hasDetailedSkinCareItem(result, "SKIN_CARE", List.of(
+                "토너", "세럼", "앰플", "에센스", "로션", "보습제", "크림", "선크림", "자외선", "성분"
+        ))) {
+            insufficient.add("SKIN_CARE");
+        }
+        return insufficient;
+    }
+
+    Set<String> findDailyCoverageConcerns(
+            UserRoutineContextDto context,
+            AiRoutineResultDto result
+    ) {
+        Set<String> concerns = new HashSet<>();
+        Set<String> selected = new HashSet<>();
+        context.getSelectedCategories().forEach(category -> selected.add(category.name()));
+
+        if (selected.contains("SLEEP_WAKE")) {
+            if (!hasItemContainingAny(result, List.of("기상", "일어나", "잠에서 깨"))) {
+                concerns.add("SLEEP_WAKE_MISSING_WAKE_UP");
+            }
+            if (!hasItemContainingAny(result, List.of("취침", "잠자리", "잠들", "수면 시작"))) {
+                concerns.add("SLEEP_WAKE_MISSING_BEDTIME");
+            }
+        }
+        if (selected.contains("DIET") && countCategory(result, "DIET") < 2) {
+            concerns.add("REVIEW_SINGLE_DIET_ITEM");
+        }
+        if (selected.contains("CLEANSING") && countCategory(result, "CLEANSING") < 2) {
+            concerns.add("REVIEW_SINGLE_CLEANSING_ITEM");
+        }
+        if (selected.contains("SKIN_CARE") && countCategory(result, "SKIN_CARE") < 2) {
+            concerns.add("REVIEW_SINGLE_SKIN_CARE_ITEM");
+        }
+        if (isPotentiallyOverClustered(result)) {
+            concerns.add("ROUTINES_CLUSTERED_IN_SHORT_TIME_WINDOW");
+        }
+        if (result.getItems().size() > 10) {
+            concerns.add("TOO_MANY_ROUTINE_ITEMS");
+        }
+        if (result.getItems().size() >= 5) {
+            if (!hasItemInPeriod(result, 4, 12)) {
+                concerns.add("MISSING_MORNING_PERIOD");
+            }
+            if (!hasItemInPeriod(result, 12, 17)) {
+                concerns.add("MISSING_DAYTIME_PERIOD");
+            }
+            if (!hasEveningItem(result)) {
+                concerns.add("MISSING_EVENING_PERIOD");
+            }
+        }
+        return concerns;
+    }
+
+    private void ensureRequiredDailyCoverage(
+            UserRoutineContextDto context,
+            AiRoutineResultDto result
+    ) {
+        Set<String> requiredMissing = new HashSet<>(findDailyCoverageConcerns(context, result));
+        requiredMissing.removeIf(concern -> concern.startsWith("REVIEW_")
+                || "ROUTINES_CLUSTERED_IN_SHORT_TIME_WINDOW".equals(concern));
+        if (!requiredMissing.isEmpty()) {
+            throw new IllegalStateException("AI 루틴의 필수 하루 흐름이 누락되었습니다: " + requiredMissing);
+        }
+    }
+
+    private int countCategory(AiRoutineResultDto result, String category) {
+        return (int) result.getItems().stream()
+                .filter(item -> category.equals(item.getCategory()))
+                .count();
+    }
+
+    private boolean hasItemInPeriod(AiRoutineResultDto result, int startHour, int endHour) {
+        return result.getItems().stream().anyMatch(item -> {
+            try {
+                int hour = java.time.LocalTime.parse(item.getScheduledTime()).getHour();
+                return hour >= startHour && hour < endHour;
+            } catch (RuntimeException exception) {
+                return false;
+            }
+        });
+    }
+
+    private boolean hasEveningItem(AiRoutineResultDto result) {
+        return result.getItems().stream().anyMatch(item -> {
+            try {
+                int hour = java.time.LocalTime.parse(item.getScheduledTime()).getHour();
+                return hour >= 17 || hour < 4;
+            } catch (RuntimeException exception) {
+                return false;
+            }
+        });
+    }
+
+    private boolean hasItemContainingAny(AiRoutineResultDto result, List<String> keywords) {
+        return result.getItems().stream().anyMatch(item -> {
+            String value = (item.getTitle() == null ? "" : item.getTitle()) + " "
+                    + (item.getDescription() == null ? "" : item.getDescription());
+            return keywords.stream().anyMatch(value::contains);
+        });
+    }
+
+    private boolean isPotentiallyOverClustered(AiRoutineResultDto result) {
+        if (result.getItems().size() < 3) {
+            return false;
+        }
+        try {
+            java.time.LocalTime resetTime = java.time.LocalTime.parse(
+                    result.getRecommendedResetTime()
+            );
+            List<Integer> offsets = result.getItems().stream()
+                    .map(AiRoutineItemDto::getScheduledTime)
+                    .map(java.time.LocalTime::parse)
+                    .map(time -> {
+                        int difference = time.toSecondOfDay() - resetTime.toSecondOfDay();
+                        return difference < 0 ? difference + 24 * 60 * 60 : difference;
+                    })
+                    .sorted()
+                    .toList();
+            int spanSeconds = offsets.get(offsets.size() - 1) - offsets.get(0);
+            return spanSeconds < 6 * 60 * 60;
+        } catch (RuntimeException exception) {
+            return false;
+        }
     }
 
     private boolean hasDetailedSkinCareItem(

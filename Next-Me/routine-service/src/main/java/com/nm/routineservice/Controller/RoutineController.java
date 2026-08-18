@@ -34,7 +34,7 @@ public class RoutineController {
     }
 
     @PostMapping("/today/generate")
-    // 프로필과 사용자가 선택한 카테고리를 기준으로 최초 기본 루틴을 만든다.
+    // 프로필과 선택 카테고리를 기준으로 매일 이어지는 기본 루틴을 생성하거나 갱신한다.
     public ResponseEntity<DailyRoutineResponseDto> generateToday(
             HttpServletRequest request,
             @Valid @RequestBody(required = false) GenerateRoutineRequestDto dto
