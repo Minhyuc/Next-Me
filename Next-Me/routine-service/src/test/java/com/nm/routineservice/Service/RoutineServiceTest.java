@@ -202,6 +202,56 @@ class RoutineServiceTest {
     }
 
     @Test
+    void adjustmentSendsOnlyItemsThatAreStillModifiableToAi() {
+        DailyRoutinePlan plan = planWithTwoItems();
+        plan.getItems().get(0).markMissed();
+        when(planRepository.findByUserIdAndRoutineDate(eq(1L), any()))
+                .thenReturn(Optional.of(plan));
+
+        UserRoutineContextDto context = new UserRoutineContextDto(
+                "{}", "{}", EnumSet.of(RoutineCategory.DIET, RoutineCategory.EXERCISE)
+        );
+        when(contextClient.getContext("Bearer test-token")).thenReturn(context);
+        when(openAiRoutineService.adjust(
+                eq(context),
+                argThat(items -> items.size() == 1
+                        && Long.valueOf(12L).equals(items.get(0).getId())),
+                eq(plan.getRoutineDate()),
+                anyString()
+        )).thenReturn(new AiRoutineResultDto(
+                "마감되지 않은 저녁 운동만 조정했어요.",
+                "06:00",
+                List.of(new AiRoutineItemDto(
+                        12L,
+                        "EXERCISE",
+                        "가볍게 걷기",
+                        "퇴근 후 20분 동안 가볍게 걸으세요.",
+                        "21:00",
+                        30
+                ))
+        ));
+
+        DailyRoutineResponseDto response = routineService.adjustToday(
+                1L,
+                "Bearer test-token",
+                adjustRequest("오늘은 오후 9시에 퇴근해")
+        );
+
+        assertEquals(LocalTime.of(21, 0), response.getItems().stream()
+                .filter(item -> "EXERCISE".equals(item.getCategory()))
+                .findFirst()
+                .orElseThrow()
+                .getScheduledTime());
+        verify(openAiRoutineService).adjust(
+                eq(context),
+                argThat(items -> items.size() == 1
+                        && Long.valueOf(12L).equals(items.get(0).getId())),
+                eq(plan.getRoutineDate()),
+                eq("오늘은 오후 9시에 퇴근해")
+        );
+    }
+
+    @Test
     void unusableAiTimeDoesNotDeleteExistingRoutine() {
         DailyRoutinePlan plan = planWithTwoItems();
         when(planRepository.findByUserIdAndRoutineDate(eq(1L), any()))
@@ -237,6 +287,40 @@ class RoutineServiceTest {
                 .findFirst()
                 .orElseThrow()
                 .getScheduledTime());
+        assertEquals(
+                "입력한 일정을 확인했지만 실제로 변경할 수 있는 루틴이 없습니다. 완료되었거나 마감된 항목은 유지됩니다.",
+                response.getCoachMessage()
+        );
+    }
+
+    @Test
+    void adjustmentReturnsAiExplanationWhenScheduleDoesNotAffectAnyRoutine() {
+        DailyRoutinePlan plan = planWithTwoItems();
+        when(planRepository.findByUserIdAndRoutineDate(eq(1L), any()))
+                .thenReturn(Optional.of(plan));
+
+        UserRoutineContextDto context = new UserRoutineContextDto(
+                "{}", "{}", EnumSet.of(RoutineCategory.DIET, RoutineCategory.EXERCISE)
+        );
+        when(contextClient.getContext("Bearer test-token")).thenReturn(context);
+        when(openAiRoutineService.adjust(eq(context), anyList(), eq(plan.getRoutineDate()), anyString()))
+                .thenReturn(new AiRoutineResultDto(
+                        "오후 9시 퇴근 이후에 예정된 루틴이 없어 현재 시간을 유지했어요.",
+                        "06:00",
+                        List.of()
+                ));
+
+        DailyRoutineResponseDto response = routineService.adjustToday(
+                1L,
+                "Bearer test-token",
+                adjustRequest("오늘은 오후 9시에 퇴근해")
+        );
+
+        assertEquals(
+                "오후 9시 퇴근 이후에 예정된 루틴이 없어 현재 시간을 유지했어요.",
+                response.getCoachMessage()
+        );
+        assertEquals(2, response.getItems().size());
     }
 
     @Test

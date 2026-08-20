@@ -255,7 +255,10 @@ public class RoutineService {
         DailyRoutinePlan plan = getOrRollOverTodayPlan(userId);
         refreshExpiredLocks(plan);
         List<DailyRoutineItem> before = new ArrayList<>(plan.getItems());
-        if (before.stream().noneMatch(item -> !item.isCompleted() && !item.isMissed())) {
+        List<DailyRoutineItem> adjustableItems = before.stream()
+                .filter(item -> !item.isCompleted() && !item.isMissed())
+                .toList();
+        if (adjustableItems.isEmpty()) {
             plan.updateAdjustmentSummary(
                     "변경 가능한 루틴이 없습니다. 이미 완료되었거나 마감된 항목은 수정할 수 없습니다."
             );
@@ -266,7 +269,7 @@ public class RoutineService {
         UserRoutineContextDto context = contextClient.getContext(authorizationHeader);
         validateSelectedCategories(context.getSelectedCategories());
         AiRoutineResultDto result = openAiRoutineService.adjust(
-                context, before, plan.getRoutineDate(), request.getMessage()
+                context, adjustableItems, plan.getRoutineDate(), request.getMessage()
         );
 
         // AI는 변경이 필요한 일부 항목만 반환할 수 있다. 응답에서 빠진 항목은 기존 값 그대로 유지한다.
@@ -274,9 +277,14 @@ public class RoutineService {
                 result.getItems(), context.getSelectedCategories(), before
         );
         if (mergeResult.appliedChanges() == 0) {
-            plan.updateAdjustmentSummary(
-                    "입력한 일정을 확인했지만 실제로 변경할 수 있는 루틴이 없습니다. 완료되었거나 마감된 항목은 유지됩니다."
-            );
+            boolean aiReturnedNoAffectedItems = result.getItems() == null || result.getItems().isEmpty();
+            String aiExplanation = result.getCoachMessage();
+            String noChangeSummary = aiReturnedNoAffectedItems
+                    && aiExplanation != null
+                    && !aiExplanation.isBlank()
+                    ? aiExplanation.trim()
+                    : "입력한 일정을 확인했지만 실제로 변경할 수 있는 루틴이 없습니다. 완료되었거나 마감된 항목은 유지됩니다.";
+            plan.updateAdjustmentSummary(noChangeSummary);
             planRepository.save(plan);
             return toResponse(plan);
         }
